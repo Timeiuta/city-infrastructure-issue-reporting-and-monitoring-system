@@ -6,8 +6,14 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <errno.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 #define MAX 256
+
+
+
 
 typedef struct {
     int id;
@@ -127,8 +133,8 @@ void add_report(char *district, char *user, char *role){
     Report r;
     r.id=rand()%10000;
     strcpy(r.inspector,user);
-    r.latitude=45;
-    r.longitude=21;
+    r.latitude=rand()%45;
+    r.longitude=rand()%21;
     strcpy(r.category,"road");
     r.severity=2;
     r.timestamp=time(NULL);
@@ -164,6 +170,60 @@ void list_reports(char *district, char *role){
     }
 
     close(fd);
+}
+
+
+
+/*================== REMOVE DISTRICT=================*/
+void remove_district(char*district, char*role){
+    if(strcmp(role,"manager")!=0){
+        printf("Only the manager can delete\n");
+        return;
+    }
+     pid_t pid = fork();
+
+    if(pid == 0){
+        execlp("rm","rm","-rf",district,NULL);
+        perror("exec failed");
+        exit(1);
+    } else {
+        wait(NULL);
+    }
+
+    char link[MAX];
+    sprintf(link,"active_reports-%s",district);
+    unlink(link);
+}
+
+/*=============notify monitor===============*/
+void notify_monitor(char *district, char *role, char *user){
+    int fd = open(".monitor_pid", O_RDONLY);
+    char logmsg[256];
+
+    if(fd < 0){
+        sprintf(logmsg,"Monitor NOT notified (no PID file)\n");
+        log_action(district,role,user,logmsg);
+        return;
+    }
+
+    char buf[50] = {0};
+    int n = read(fd, buf, sizeof(buf)-1);
+    close(fd);
+
+    if(n <= 0){
+        sprintf(logmsg,"Monitor NOT notified (read failed)\n");
+        log_action(district,role,user,logmsg);
+        return;
+    }
+    pid_t pid = atoi(buf);
+
+    if(kill(pid, SIGUSR1) == -1){
+        sprintf(logmsg,"Monitor NOT notified (kill failed)\n");
+    } else {
+        sprintf(logmsg,"Monitor notified successfully\n");
+    }
+
+    log_action(district,role,user,logmsg);
 }
 
 /* ================= VIEW ================= */
@@ -318,11 +378,13 @@ int main(int argc,char *argv[]){
         else if(strcmp(argv[i],"--remove_report")==0){ cmd="remove"; district=argv[++i]; id=atoi(argv[++i]); }
         else if(strcmp(argv[i],"--update_threshold")==0){ cmd="update"; district=argv[++i]; val=atoi(argv[++i]); }
         else if(strcmp(argv[i],"--filter")==0){ cmd="filter"; district=argv[++i]; }
+        else if(strcmp(argv[i],"--remove_district")==0){cmd="rm"; district=argv[++i];}
     }
 
     if(strcmp(cmd,"add")==0){
         create_district(district);
         add_report(district,user,role);
+        notify_monitor(district,role,user);
         log_action(district,role,user,"ADD");
     }
 
@@ -350,6 +412,17 @@ int main(int argc,char *argv[]){
     else if(strcmp(cmd,"filter")==0){
         filter_reports(district,argc-4,&argv[4]);
     }
+    else if(strcmp(cmd,"rm")==0){
+        remove_district(district,role);
+    }
+
+    else{
+        printf("No argument avalable");
+
+    }
+    
+
+
 
     return 0;
 }
