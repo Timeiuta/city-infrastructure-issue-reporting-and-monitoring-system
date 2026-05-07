@@ -8,13 +8,15 @@
 #define PID_FILE ".monitor_pid"
 
 void handle_sigint(int sig){
-    printf("Monitor stopping (SIGINT received)\n");
+    const char *msg = "Monitor stopping (SIGINT received)\n";
+    write(STDOUT_FILENO, msg, strlen(msg));
     unlink(PID_FILE);
-    exit(0);
+    _exit(0);
 }
 
 void handle_sigusr1(int sig){
-    printf("New report added!\n");
+    const char *msg = "New report added!\n";
+    write(STDOUT_FILENO, msg, strlen(msg));
 }
 
 int main(){
@@ -25,7 +27,12 @@ int main(){
     }
 
     char buf[50];
-    sprintf(buf, "%d", getpid());
+    snprintf(buf, sizeof(buf), "%d\n", getpid());
+    if (write(fd, buf, strlen(buf)) < 0) {
+        perror("Error writing to .monitor_pid");
+        close(fd);
+        return 1;
+    }
     write(fd, buf, strlen(buf));
     close(fd);
 

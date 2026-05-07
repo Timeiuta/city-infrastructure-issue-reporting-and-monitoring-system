@@ -26,33 +26,46 @@ typedef struct {
     char description[100];
 } Report;
 
+
+/* ================= PERM STRING ================= */
+void perm_to_str(mode_t mode, char *str){
+    str[0] = (mode & S_IRUSR) ? 'r' : '-';
+    str[1] = (mode & S_IWUSR) ? 'w' : '-';
+    str[2] = (mode & S_IXUSR) ? 'x' : '-';
+    str[3] = (mode & S_IRGRP) ? 'r' : '-';
+    str[4] = (mode & S_IWGRP) ? 'w' : '-';
+    str[5] = (mode & S_IXGRP) ? 'x' : '-';
+    str[6] = (mode & S_IROTH) ? 'r' : '-';
+    str[7] = (mode & S_IWOTH) ? 'w' : '-';
+    str[8] = (mode & S_IXOTH) ? 'x' : '-';
+    str[9] = '\0';
+}
+
+
 /* ================= PERMISSION ================= */
-int check_permission(const char *path, const char *role, int mode){
+int check_permission(const char *path, const char *role, int need_read, int need_write){
     struct stat st;
-    if(stat(path,&st) < 0){
+
+    if(stat(path, &st) < 0){
         perror("stat");
         return 0;
     }
 
-    if(strcmp(role,"manager")==0){
-        if(mode == R_OK && !(st.st_mode & S_IRUSR)) return 0;
-        if(mode == W_OK && !(st.st_mode & S_IWUSR)) return 0;
-    } else {
-        if(mode == R_OK && !(st.st_mode & S_IRGRP)) return 0;
-        if(mode == W_OK && !(st.st_mode & S_IWGRP)) return 0;
+    if(strcmp(role, "manager") == 0){
+        if(need_read && !(st.st_mode & S_IRUSR)) return 0;
+        if(need_write && !(st.st_mode & S_IWUSR)) return 0;
+    }
+    else if(strcmp(role, "inspector") == 0){
+        if(need_read && !(st.st_mode & S_IRGRP)) return 0;
+        if(need_write && !(st.st_mode & S_IWGRP)) return 0;
+    }
+    else{
+        return 0;
     }
 
     return 1;
 }
 
-/* ================= PERM STRING ================= */
-void perm_to_str(mode_t mode, char *str){
-    char chars[] = {'r','w','x'};
-    for(int i=0;i<9;i++){
-        str[i] = (mode & (1 << (8-i))) ? chars[i%3] : '-';
-    }
-    str[9]='\0';
-}
 
 /* ================= SYMLINK CHECK ================= */
 void check_symlink(char *name){
@@ -71,11 +84,6 @@ void check_symlink(char *name){
 
 /* ================= LOG ================= */
 void log_action(char *district, char *role, char *user, char *action){
-    if(strcmp(role,"manager")!=0){
-        printf("Only manager can write logs!\n");
-        return;
-    }
-
     char path[MAX];
     sprintf(path,"%s/logged_district",district);
 
@@ -96,21 +104,25 @@ void log_action(char *district, char *role, char *user, char *action){
 /* ================= CREATE ================= */
 void create_district(char *name){
     mkdir(name,0750);
+    chmod(district, 0750);
 
     char path[MAX];
 
     sprintf(path,"%s/reports.dat",name);
     int fd=open(path,O_CREAT|O_RDWR,0664);
     close(fd);
+    chmod(path, 0664);
 
     sprintf(path,"%s/district.cfg",name);
     fd=open(path,O_CREAT|O_RDWR,0640);
     write(fd,"threshold=2\n",12);
     close(fd);
+    chmod(path, 0640);
 
     sprintf(path,"%s/logged_district",name);
     fd=open(path,O_CREAT|O_RDWR,0644);
     close(fd);
+    chmod(path, 0644);
 
     char linkname[MAX];
     sprintf(linkname,"active_reports-%s",name);
@@ -119,29 +131,71 @@ void create_district(char *name){
 }
 
 /* ================= ADD ================= */
-void add_report(char *district, char *user, char *role){
+void add_report(
+    char *district,
+    char *user,
+    char *role,
+    char *category,
+    int severity,
+    float lat,
+    float lon,
+    char *desc
+){
     char path[MAX];
-    sprintf(path,"%s/reports.dat",district);
 
-    if(!check_permission(path,role,W_OK)){
+    snprintf(path, sizeof(path), "%s/reports.dat", district);
+
+    if(!check_permission(path, role, W_OK)){
         printf("No write permission!\n");
         return;
     }
 
-    int fd=open(path,O_WRONLY|O_APPEND);
+    int fd = open(path, O_WRONLY | O_APPEND);
+
+    if(fd < 0){
+        perror("open");
+        return;
+    }
+
+    struct stat st;
+
+    if(stat(path, &st) < 0){
+        perror("stat");
+        close(fd);
+        return;
+    }
 
     Report r;
-    r.id=rand()%10000;
-    strcpy(r.inspector,user);
-    r.latitude=rand()%45;
-    r.longitude=rand()%21;
-    strcpy(r.category,"road");
-    r.severity=2;
-    r.timestamp=time(NULL);
-    strcpy(r.description,"Sample");
 
-    write(fd,&r,sizeof(r));
+    r.id = st.st_size / sizeof(Report) + 1;
+
+    strncpy(r.inspector, user, sizeof(r.inspector)-1);
+    r.inspector[sizeof(r.inspector)-1] = '\0';
+
+    strncpy(r.category, category, sizeof(r.category)-1);
+    r.category[sizeof(r.category)-1] = '\0';
+
+    r.severity = severity;
+
+    r.latitude = lat;
+    r.longitude = lon;
+
+    r.timestamp = time(NULL);
+
+    strncpy(r.description, desc, sizeof(r.description)-1);
+    r.description[sizeof(r.description)-1] = '\0';
+
+    ssize_t n = write(fd, &r, sizeof(r));
+
+    if(n != sizeof(r)){
+        perror("write");
+    }
+
     close(fd);
+
+    notify_monitor(district, role, user);
+
+    log_action(district, role, user, "ADD REPORT");
 }
 
 /* ================= LIST ================= */
@@ -206,7 +260,7 @@ void notify_monitor(char *district, char *role, char *user){
         return;
     }
 
-    char buf[50] = {0};
+    char buf[64] = {0};
     int n = read(fd, buf, sizeof(buf)-1);
     close(fd);
 
@@ -222,7 +276,6 @@ void notify_monitor(char *district, char *role, char *user){
     } else {
         sprintf(logmsg,"Monitor notified successfully\n");
     }
-
     log_action(district,role,user,logmsg);
 }
 
@@ -230,17 +283,23 @@ void notify_monitor(char *district, char *role, char *user){
 void view_report(char *district,int id){
     char path[MAX];
     sprintf(path,"%s/reports.dat",district);
-
-    int fd=open(path,O_RDONLY);
-    Report r;
-
-    while(read(fd,&r,sizeof(r))>0){
-        if(r.id==id){
-            printf("ID:%d\nInspector:%s\nCategory:%s\nSeverity:%d\nDesc:%s\n",
-                   r.id,r.inspector,r.category,r.severity,r.description);
-        }
+    if(!check_permission(path, role, 1, 0)){
+        printf("No permission for log!\n");
+        return;
     }
 
+    int fd=open(path,O_RDONLY);
+   Report r;
+    int found = 0;
+    while(read(fd, &r, sizeof(r)) > 0){
+        if(r.id == id){
+            printf("ID:%d\nInspector:%s\nCategory:%s\nSeverity:%d\nDesc:%s\n",
+                   r.id, r.inspector, r.category, r.severity, r.description);
+            found = 1;
+            break;
+        }
+    }
+    if(!found) printf("Report not found\n");
     close(fd);
 }
 
@@ -249,24 +308,40 @@ void remove_report(char *district,int id){
     char path[MAX];
     sprintf(path,"%s/reports.dat",district);
 
-    int fd=open(path,O_RDWR);
-    Report r;
+    if(strcmp(role, "manager") != 0){
+        printf("Only manager can remove reports!\n");
+        return;
+    }
 
+    int fd=open(path,O_RDWR);
+    if(fd < 0) return;
+
+    Report r;
+    off_t pos = 0;
+    int found = 0;
     while(read(fd,&r,sizeof(r))>0){
         if(r.id==id){
-            Report temp;
-            off_t pos=lseek(fd,0,SEEK_CUR);
-
-            while(read(fd,&temp,sizeof(temp))>0){
-                lseek(fd,pos-sizeof(r),SEEK_SET);
-                write(fd,&temp,sizeof(temp));
-                pos+=sizeof(temp);
-            }
-
-            off_t size=lseek(fd,0,SEEK_END);
-            ftruncate(fd,size-sizeof(r));
-            break;
+            found = 1;
+            pos = lseek(fd, 0, SEEK_CUR) - sizeof(Report);
+            break
+            ;}
         }
+        if(found){
+            Report temp;
+        // Shift all subsequent records left 
+        while(read(fd, &temp, sizeof(temp)) > 0){
+            off_t current_read_pos = lseek(fd, 0, SEEK_CUR);
+            lseek(fd, pos, SEEK_SET);
+            write(fd, &temp, sizeof(temp));
+            pos += sizeof(Report);
+            lseek(fd, current_read_pos, SEEK_SET);
+        }
+    struct stat st;
+        fstat(fd, &st);
+        ftruncate(fd, st.st_size - sizeof(Report));
+        printf("Report %d removed.\n", id);
+    } else {
+        printf("Report not found.\n");
     }
 
     close(fd);
@@ -275,7 +350,7 @@ void remove_report(char *district,int id){
 /* ================= UPDATE ================= */
 void update_threshold(char *district,int val,char *role){
     if(strcmp(role,"manager")!=0){
-        printf("Only manager!\n");
+        printf("Only manager can update threshold!\n");
         return;
     }
 
@@ -298,8 +373,21 @@ void update_threshold(char *district,int val,char *role){
 }
 
 /* ================= FILTER ================= */
-int parse_condition(const char *input,char *field,char *op,char *value){
-    sscanf(input,"%[^:]:%[^:]:%s",field,op,value);
+int parse_condition(const char *input, char *field, char *op, char *value){
+    char temp[256];
+    strcpy(temp, input);
+
+    char *p1 = strtok(temp, ":");
+    char *p2 = strtok(NULL, ":");
+    char *p3 = strtok(NULL, "");
+
+    if(!p1 || !p2 || !p3)
+        return 0;
+
+    strcpy(field, p1);
+    strcpy(op, p2);
+    strcpy(value, p3);
+
     return 1;
 }
 
@@ -364,15 +452,54 @@ void filter_reports(char *district,int count,char *conds[]){
     close(fd);
 }
 
+
+void check_symlinks(){
+    DIR *dir = opendir(".");
+
+    if(!dir)
+        return;
+
+    struct dirent *entry;
+
+    while((entry = readdir(dir)) != NULL){
+        struct stat st;
+
+        if(lstat(entry->d_name, &st) < 0)
+            continue;
+
+        if(S_ISLNK(st.st_mode)){
+            char target[MAX];
+            int len = readlink(entry->d_name, target, sizeof(target)-1);
+
+            if(len >= 0){
+                target[len] = '\0';
+
+                struct stat tmp;
+    if(stat(target, &tmp) < 0){
+                    printf("Dangling symlink detected: %s\n", entry->d_name);
+                }
+            }
+        }
+    }
+
+    closedir(dir);
+}
+
+
 /* ================= MAIN ================= */
 int main(int argc,char *argv[]){
     char *role=NULL,*user=NULL,*cmd=NULL,*district=NULL;
     int id=0,val=0;
+    char *category = NULL;
+    int severity = 0;
+    float lat = 0;
+    float lon = 0;
+    char *desc = NULL;
 
     for(int i=1;i<argc;i++){
         if(strcmp(argv[i],"--role")==0) role=argv[++i];
         else if(strcmp(argv[i],"--user")==0) user=argv[++i];
-        else if(strcmp(argv[i],"--add")==0){ cmd="add"; district=argv[++i]; }
+        else if(strcmp(argv[i],"--add")==0){ cmd="add"; district = argv[++i];category = argv[++i];severity = atoi(argv[++i]);lat = atof(argv[++i]);lon = atof(argv[++i]);desc = argv[++i]; }
         else if(strcmp(argv[i],"--list")==0){ cmd="list"; district=argv[++i]; }
         else if(strcmp(argv[i],"--view")==0){ cmd="view"; district=argv[++i]; id=atoi(argv[++i]); }
         else if(strcmp(argv[i],"--remove_report")==0){ cmd="remove"; district=argv[++i]; id=atoi(argv[++i]); }
@@ -380,13 +507,15 @@ int main(int argc,char *argv[]){
         else if(strcmp(argv[i],"--filter")==0){ cmd="filter"; district=argv[++i]; }
         else if(strcmp(argv[i],"--remove_district")==0){cmd="rm"; district=argv[++i];}
     }
-
-    if(strcmp(cmd,"add")==0){
-        create_district(district);
-        add_report(district,user,role);
-        notify_monitor(district,role,user);
-        log_action(district,role,user,"ADD");
+    
+    if(strcmp(cmd, "add") == 0) {
+    struct stat st;
+    if(stat(district, &st) < 0) {
+        create_district(district); // Ensure this function handles the initial dir creation
     }
+    // Only call add_report; let it handle notification and logging internally
+    add_report(district, user, role, category, severity, lat, lon, desc);
+}
 
     else if(strcmp(cmd,"list")==0){
         list_reports(district,role);
