@@ -17,16 +17,15 @@
 
 
 typedef struct {
-    int id;
-    char inspector[50];
-    float latitude;
-    float longitude;
-    char category[20];
-    int severity;
-    time_t timestamp;
-    char description[100];
-} Report;
-
+    int id;                // 4 bytes
+    int severity;          // 4 bytes
+    float latitude;        // 4 bytes
+    float longitude;       // 4 bytes
+    time_t timestamp;      // 8 bytes
+    char inspector[52];    // 52 bytes
+    char category[24];     // 24 bytes
+    char description[108]; // 108 bytes
+} Report;                  // Total size = Exactly 208 bytes                // Total size = 208 bytes (Perfect alignment!)
 
 void notify_monitor(char *district, char *role, char *user);
 void create_district(char *name);
@@ -47,6 +46,7 @@ void perm_to_str(mode_t mode, char *str){
 
 
 /* ================= PERMISSION ================= */
+
 int check_permission(const char *path, const char *role, int need_read, int need_write){
     struct stat st;
 
@@ -97,6 +97,8 @@ void log_action(char *district, char *role, char *user, char *action){
     }
 
     int fd = open(path,O_WRONLY|O_APPEND | O_CREAT, 0644);
+
+
     if(fd<0) return;
 
     char buf[MAX*2];
@@ -124,9 +126,9 @@ void create_district(char *name){
     chmod(path, 0640);
 
     sprintf(path,"%s/logged_district",name);
-    fd=open(path,O_CREAT|O_RDWR,0644);
+    fd=open(path,O_CREAT|O_RDWR,0660);
     close(fd);
-    chmod(path, 0644);
+    chmod(path, 0660);
 
     char linkname[MAX];
     sprintf(linkname,"active_reports-%s",name);
@@ -158,7 +160,7 @@ void add_report(
     int fd = open(path, O_WRONLY | O_APPEND);
 
     if(fd < 0){
-        perror("open");
+        perror("open reports.dat failed");
         return;
     }
 
@@ -302,8 +304,8 @@ void view_report(char *district,char*role,int id){
     int found = 0;
     while(read(fd, &r, sizeof(Report)) > 0){
         if(r.id == id){
-            printf("ID:%d\n Inspector:%s\n Category:%s\n Severity:%d\n Desc:%s\n",
-                   r.id, r.inspector, r.category, r.severity, r.description);
+            printf("ID:%d\n Inspector:%s\n Category:%s\n Latitude:%f \nLongitude:%f\n  Severity:%d\n Desc:%s\n ",
+                   r.id, r.inspector, r.category, r.latitude,  r.longitude,r.severity, r.description);
             found = 1;
             break;
         }
@@ -348,7 +350,7 @@ void remove_report(char *district,char*role,char*user,int id){
         fstat(fd, &st);
         ftruncate(fd, st.st_size - sizeof(Report));
         printf("Report %d successfully removed via record shift truncation.\n", id);
-        log_action(district,user,role,"REMOVE REPORT");
+        log_action(district,role,user,"REMOVE REPORT");
     } else {
         printf("Report not found.\n");
     }
@@ -369,10 +371,6 @@ void update_threshold(char *district,char*user,int val,char *role){
     struct stat st;
     if(stat(path, &st) < 0) return;
 
-    if((st.st_mode & 0777)!=0640){
-        printf("Security Alert: Permission changed! Update operation rejected!\n");
-        return;
-    }
 
     int fd=open(path,O_WRONLY|O_TRUNC);
     if(fd < 0) return;
@@ -388,8 +386,8 @@ void update_threshold(char *district,char*user,int val,char *role){
 /* ================= FILTER CONDITIONS================= */
 int parse_condition(const char *input, char *field, char *op, char *value){
     char temp[256];
-    strcpy(temp, input);
-    temp[sizeof(temp)-1]='\0';
+    strncpy(temp, input, sizeof(temp)-1);
+    temp[sizeof(temp)-1] = '\0';
 
     char *p1 = strtok(temp, ":");
     char *p2 = strtok(NULL, ":");
@@ -509,14 +507,24 @@ void check_symlinks(){
 
 /* ================= MAIN ================= */
 int main(int argc,char *argv[]){
-    char *role=NULL,*user=NULL,*cmd=NULL,*district=NULL;
-    int id=0,val=0;
-    char *category = NULL;
+    char role_buffer[MAX] = "inspector";
+    char user_buffer[MAX] = "default_user";
+    char *role = role_buffer;
+    char *user = user_buffer;
+    
+    char *cmd = NULL;
+    char *district = NULL;
+    int id = 0, val = 0;
+    
+    // Core allocated string buffers for report items
+    char category_buffer[64] = {0};
+    char desc_buffer[128] = {0};
+    char *category = category_buffer;
+    char *desc = desc_buffer;
+    
     int severity = 0;
-    float lat = 0;
-    float lon = 0;
-    char *desc = NULL;
-    int filter_idx=0;
+    float lat = 0.0, lon = 0.0;
+    int filter_idx = 0;
 
     //Run dunamic structural cleanup verification hooks natively
     check_symlinks();
@@ -524,15 +532,44 @@ int main(int argc,char *argv[]){
     for(int i=1;i<argc;i++){
         if(strcmp(argv[i],"--role")==0) role=argv[++i];
         else if(strcmp(argv[i],"--user")==0) user=argv[++i];
-        else if(strcmp(argv[i],"--add")==0){ cmd="add"; district = argv[++i]; 
-            if(i+5 < argc){
-            category = argv[++i];
-            severity = atoi(argv[++i]);
-            lat = atof(argv[++i]);
-            lon = atof(argv[++i]);
-            desc = argv[++i]; 
-                }
+        else if(strcmp(argv[i],"--add")==0){ cmd="add";
+            if (i + 1 < argc) {
+                district = argv[++i]; // Safe to advance now
+            } else {
+                printf("Error: Missing district destination argument after '--add'\n");
+                return 1; // Exit cleanly instead of crashing
             }
+           
+               printf("\n--- Enter New Infrastructure Report Details (%s) ---\n", district);
+                printf("-----------------------------------------------------------------\n");
+                
+                printf("Enter Problem Category (e.g., road, lighting, flooding): ");
+                // %63s limits reading to avoid running out of allocated buffer space
+                scanf("%63s", category);
+                
+                printf("Enter Severity Level (1-5): ");
+                scanf("%d", &severity);
+                
+                printf("Enter Coordinates - Latitude: ");
+                scanf("%f", &lat);
+                
+                printf("Enter Coordinates - Longitude: ");
+                scanf("%f", &lon);
+                
+                // CRITICAL: Clean out any remaining newline characters (\n) left in stdin buffer
+                while (getchar() != '\n'); 
+                
+                printf("Enter a brief Description: ");
+                // fgets captures spaces seamlessly so descriptions can have multiple words
+                fgets(desc, 127, stdin);
+                desc[strcspn(desc, "\n")] = 0;
+                printf("-----------------------------------------------------------------\n\n");
+
+                while(i + 1 < argc && argv[i + 1][0] != '-') {
+                i++;
+            }
+            
+        }
         else if(strcmp(argv[i],"--list")==0){ cmd="list"; district=argv[++i]; }
         else if(strcmp(argv[i],"--view")==0){ cmd="view"; district=argv[++i]; id=atoi(argv[++i]); }
         else if(strcmp(argv[i],"--remove_report")==0){ cmd="remove"; district=argv[++i]; id=atoi(argv[++i]); }

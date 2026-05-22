@@ -8,14 +8,16 @@
 #define PID_FILE ".monitor_pid"
 
 void handle_sigint(int sig){
-    const char *msg = "[Monitor Process Signaling] System stopping gracefully (SIGINT received).\n";
+    const char *msg = "STATUS:STOPPED\n";
     write(STDOUT_FILENO, msg, strlen(msg));
     unlink(PID_FILE);
     _exit(0);
 }
 
 void handle_sigusr1(int sig){
-    const char *msg = "[Monitor Alert System] Async Event Captured: A new infrastructure report was logged!\n";
+    const char *msg =
+        "EVENT:New infrastructure report added\n";
+
     write(STDOUT_FILENO, msg, strlen(msg));
 }
 
@@ -30,7 +32,7 @@ int main(){
         if(bytes_read>0){
             pid_t old_pid=atoi(old_pid_buff);
             if(kill(old_pid,0)==0){
-                printf("ERROR: already_running:%d\n", old_pid);
+                printf("ERROR:ALREADY_RUNNING:%d\n", old_pid);
                 fflush(stdout);
                 return 1;
             }

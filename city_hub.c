@@ -11,86 +11,136 @@
 
 // Data tracking structure for infrastructure report layout to process scores
 typedef struct {
-    int id;
-    char inspector[50];
-    float latitude;
-    float longitude;
-    char category[20];
-    int severity;
-    long timestamp;
-    char description[100];
+    int id;                // 4 bytes
+    int severity;          // 4 bytes
+    float latitude;        // 4 bytes
+    float longitude;       // 4 bytes
+    time_t timestamp;      // 8 bytes
+    char inspector[52];    // 52 bytes
+    char category[24];     // 24 bytes
+    char description[108];
 } ReportRecord;
 
 /* ================= MONITOR PIPING SYSTEM ================= */
 void launch_monitor_pipeline() {
-    int pipe_fd[2];
-    if (pipe(pipe_fd) < 0) {
-        perror("Pipe generation failed");
-        return;
-    }
 
     pid_t hub_mon_pid = fork();
-    if (hub_mon_pid < 0) {
-        perror("Fork failed");
+
+    if(hub_mon_pid < 0){
+        perror("fork");
         return;
     }
 
-    if (hub_mon_pid == 0) {
-        // inside hub_mon intermediate background manager process
-        close(pipe_fd[0]); // close read side
+    /*
+        PARENT = city_hub shell
+        Immediately return to prompt
+    */
+    if(hub_mon_pid > 0){
+        printf("Background hub_mon started with PID %d\n", hub_mon_pid);
+        return;
+    }
 
-        // Map standard output of the monitor process directly to our pipe write descriptor
-        dup2(pipe_fd[1], STDOUT_FILENO);
+    /*
+        CHILD = hub_mon
+    */
+
+    int pipe_fd[2];
+
+    if(pipe(pipe_fd) < 0){
+        perror("pipe");
+        exit(1);
+    }
+
+    pid_t monitor_pid = fork();
+
+    if(monitor_pid < 0){
+        perror("fork");
+        exit(1);
+    }
+
+    /*
+        MONITOR PROCESS
+    */
+   if (monitor_pid == 0) {
+        close(pipe_fd[0]); // Close unused read side
+
+        // Duplicate write end of pipe onto standard output descriptor
+        if (dup2(pipe_fd[1], STDOUT_FILENO) < 0) {
+            perror("dup2 failed");
+            exit(1);
+        }
         close(pipe_fd[1]);
 
-        // Execute standalone compiled monitor executable program
+        // Execute the standalone compiled monitor program 
+        // Note: Make sure to compile your monitor file using: gcc monitor_reports.c -o monitor_reports
         execl("./monitor_reports", "./monitor_reports", NULL);
-        perror("Execution of monitor binary failed");
+
+        // If execl returns, an error definitely occurred
+        perror("[ERROR] Execution of ./monitor_reports executable binary failed");
         exit(1);
-    } 
-
-    // Inside the interactive main city_hub context loop
-    close(pipe_fd[1]); // Close write end
-
-    printf("[City Hub Control] Initializing background listener tracking context...\n");
-    
-    // We split reading by structural tokens sent over the pipe
-    char read_buf[MAX_LINE];
-    FILE *stream = fdopen(pipe_fd[0], "r");
-    if (!stream) {
-        close(pipe_fd[0]);
-        return;
     }
 
-    // Read lines printed by monitor process dynamically
-    while (fgets(read_buf, sizeof(read_buf), stream) != NULL) {
-        // Strip trailing newline character
-        read_buf[strcspn(read_buf, "\n")] = 0;
+    /*
+        hub_mon PROCESS
+    */
 
-        if (strncmp(read_buf, "ERROR:ALREADY_RUNNING:", 22) == 0) {
-            char *pid_ptr = read_buf + 22;
-            printf("\n⚠️ [Hub System Alert] Execution Refused! Monitor is already running with PID: %s\n", pid_ptr);
+    close(pipe_fd[1]);
+
+    FILE *stream = fdopen(pipe_fd[0], "r");
+
+    if(!stream){
+        perror("fdopen");
+        exit(1);
+    }
+
+    char buffer[MAX_LINE];
+
+    while(fgets(buffer, sizeof(buffer), stream) != NULL){
+
+        buffer[strcspn(buffer, "\n")] = '\0';
+
+        /*
+            STANDARDIZED PROTOCOL
+        */
+
+        if(strncmp(buffer, "STATUS:RUNNING:", 15) == 0){
+
+            printf("[hub_mon] Monitor started -> %s\n", buffer + 15);
+        }
+
+        else if(strncmp(buffer, "EVENT:", 6) == 0){
+
+            printf("[hub_mon] %s\n", buffer + 6);
+        }
+
+        else if(strncmp(buffer, "ERROR:ALREADY_RUNNING:", 22) == 0){
+
+            printf("[hub_mon] Monitor already running with PID %s\n",
+                   buffer + 22);
+
             break;
         }
-        else if (strncmp(read_buf, "STATUS:RUNNING:", 15) == 0) {
-            char *pid_ptr = read_buf + 15;
-            printf("✅ [Hub System Alert] Background monitor initialized flawlessly. PID tracked: %s\n", pid_ptr);
-        }
-        else if (strcmp(read_buf, "STATUS:STOPPED") == 0) {
-            printf("\n🛑 [Hub System Alert] Monitor process terminated safely.\n");
+
+        else if(strcmp(buffer, "STATUS:STOPPED") == 0){
+
+            printf("[hub_mon] Monitor terminated\n");
+
             break;
         }
-        else if (strncmp(read_buf, "EVENT:", 6) == 0) {
-            char *msg_ptr = read_buf + 6;
-            printf("\n🔔 [Async Monitor Alert] %s\n", msg_ptr);
+
+        else{
+
+           printf("[hub_mon] Incoming Buffer Frame: %s\n", buffer);
         }
-        printf("city_hub> ");
         fflush(stdout);
     }
 
     fclose(stream);
-    waitpid(hub_mon_pid, NULL, 0); // Reclaim background child resources clean
-    printf("[City Hub Control] Monitor pipeline tracking closed down successfully.\n");
+
+    waitpid(monitor_pid, NULL, 0);
+
+    printf("[hub_mon] Background monitoring pipeline processor exiting.\n");
+    exit(0);
 }
 
 /* ================= SCORER CALCULATION SYSTEM ================= */
@@ -184,7 +234,7 @@ void calculate_scores(int district_count, char *districts[]) {
         close(pipes[i][1]);
     }
 
-    printf("\n📊 Aggregating Distributed Workload Intelligence Scorecard Metrics:\n");
+    printf("\n Aggregating Distributed Workload Intelligence Scorecard Metrics:\n");
     
     // Harvest the calculated metrics across distinct file pipe pipelines sequentially
     for (int i = 0; i < district_count; i++) {
