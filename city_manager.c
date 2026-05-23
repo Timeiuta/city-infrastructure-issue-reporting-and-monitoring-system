@@ -126,9 +126,9 @@ void create_district(char *name){
     chmod(path, 0640);
 
     sprintf(path,"%s/logged_district",name);
-    fd=open(path,O_CREAT|O_RDWR,0660);
+    fd=open(path,O_CREAT|O_RDWR,0644);
     close(fd);
-    chmod(path, 0660);
+    chmod(path, 0644);
 
     char linkname[MAX];
     sprintf(linkname,"active_reports-%s",name);
@@ -151,7 +151,7 @@ void add_report(
     char path[MAX];
 
     snprintf(path, sizeof(path), "%s/reports.dat", district);
-
+    
     if(!check_permission(path, role, 0,1)){
         printf("No write permission!\n");
         return;
@@ -198,7 +198,13 @@ void add_report(
     close(fd);
 
     notify_monitor(district, role, user);
-    log_action(district, role, user, "ADD REPORT");
+    if(strcmp(role,"manager")==0){
+        log_action(district, role, user, "ADD REPORT");
+
+    }else{
+        printf("Notice: Inspector actions are monitored via signals; skip writing to manager-only log.\n");
+    }
+    
 }
 
 /* ================= LIST ================= */
@@ -359,7 +365,7 @@ void remove_report(char *district,char*role,char*user,int id){
 }
 
 /* ================= UPDATE THRESHOLD================= */
-void update_threshold(char *district,char*user,int val,char *role){
+void update_threshold(char *district,char *role,char*user,int val){
     if(strcmp(role,"manager")!=0){
         printf("Access Denied: Only manager can update threshold!\n");
         return;
@@ -602,7 +608,7 @@ int main(int argc,char *argv[]){
         remove_report(district,role,user,id);
     }
     else if(strcmp(cmd,"update")==0){
-        update_threshold(district,user,val,role);
+        update_threshold(district,role,user,val);
     }
     else if(strcmp(cmd,"filter")==0){
         filter_reports(district,role,filter_idx,argc,argv);

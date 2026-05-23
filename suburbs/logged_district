@@ -1,0 +1,10 @@
+1779540891 manager alice Monitor notified via SIGUSR1 successfully
+
+1779540891 manager alice ADD REPORT
+1779540923 inspector alice Monitor notified via SIGUSR1 successfully
+
+1779540923 inspector alice ADD REPORT
+1779542709 inspector alice Monitor notified via SIGUSR1 successfully
+
+1779543172 manager alice UPDATE THRESHOLD
+1779543519 manager alice UPDATE THRESHOLD
